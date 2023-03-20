@@ -1,0 +1,23 @@
+[build-system]
+requires = ["wheel", "setuptools~=67.0", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dsp_sandbox"
+dynamic = ["version"]
+description = "Experimental Amaranth HDL DSP cores"
+authors = [{name = "Diego Hurtado"}]
+license = {file = "LICENSE"}
+requires-python = ">=3.7"
+dependencies = [
+  "amaranth",
+  "luna",
+  "numpy",
+]
+
+[tool.setuptools_scm]
+local_scheme = "node-and-timestamp"
+
+[tool.setuptools.packages.find]
+include = ["dsp_sandbox*"]
+exclude = ["tests*"]
