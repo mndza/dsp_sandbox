@@ -36,6 +36,7 @@ def stream_process(
             counter = (counter + 1) % (output_stall_cycles + 1)
 
     def input_sender():
+        if input_stream is None: return
         # Build a generator that delivers values for payload and valid signals
         if input_idle_cycles == 0:
             source = zip(input_sequence, repeat(1))

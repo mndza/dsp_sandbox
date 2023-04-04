@@ -86,9 +86,13 @@ class Complex(ValueCastable):
         return Complex(value=(real, imag))
 
     def __mul__(self, other):
-        real = self.real * other.real - self.imag * other.imag
-        imag = self.real * other.imag + self.imag * other.real
-        assert real.shape == imag.shape
+        if isinstance(other, (Complex, ComplexConst)):
+            real = self.real * other.real - self.imag * other.imag
+            imag = self.real * other.imag + self.imag * other.real
+            assert real.shape == imag.shape
+        elif isinstance(other, (FixedPointValue, FixedPointConst)):
+            real = self.real * other
+            imag = self.imag * other
         return Complex(value=(real, imag))
 
     def __rshift__(self, shift):
