@@ -1,4 +1,4 @@
-from amaranth import Elaboratable, Module, Signal, Memory
+from amaranth import Elaboratable, Module, Signal, Memory, Cat
 
 from cmath import exp, pi
 from math import ceil, log2
@@ -6,11 +6,11 @@ from enum import IntEnum
 
 from .types.fixed_point import Q
 from .types.complex import Complex, ComplexConst
+from .streams import ComplexStream
 from .bit_exchange import SerialBitReversal
-from .delay import Delay
+from .delay import StreamDelay
 
 # TODO:
-# - Use Streams
 # - Add optional scaling / rounding
 # - Make twiddle shape configurable
 # - Add more tests
@@ -40,10 +40,8 @@ class SerialFFT(Elaboratable):
         else:
             output_shape = shape
         # Ports
-        self.input          = Complex(shape=shape)
-        self.input_valid    = Signal()
-        self.output         = Complex(shape=output_shape)
-        self.output_valid   = Signal()
+        self.input          = ComplexStream(shape=shape)
+        self.output         = ComplexStream(shape=output_shape)
 
     def elaborate(self, platform):
         m = Module()
@@ -78,7 +76,6 @@ class SerialFFT(Elaboratable):
             # Butterfly
             stages += [ SDFRadix2Stage(N, shape) ]
             shape = stages[-1].output.shape
-            #shape = shape_out
             if N == 2: N = 1; break
             # Twiddle factors
             w = [ (0, N) ] * (N//2) + [ (k, N) for k in range(N//2) ]
@@ -93,19 +90,11 @@ class SerialFFT(Elaboratable):
         m.submodules += stages
 
         # Connect all stages and input/output
-        last_data  = self.input
-        last_valid = self.input_valid
+        last = self.input
         for stage in stages:
-            m.d.comb += [
-                stage.input        .eq(last_data),
-                stage.input_valid  .eq(last_valid),
-            ]
-            last_data  = stage.output
-            last_valid = stage.output_valid
-        m.d.comb += [
-            self.output       .eq(last_data),
-            self.output_valid .eq(last_valid),
-        ]
+            m.d.comb += stage.input.stream_eq(last)
+            last = stage.output
+        m.d.comb += self.output.stream_eq(last)
 
         return m
 
@@ -117,10 +106,11 @@ class SDFRadix2Butterfly(Elaboratable):
     def __init__(self, shape, shape_out=None):
         shape_out = shape_out or Q(1 + shape.integer_bits, shape.fraction_bits)
         self.s = Signal()
-        self.a = Complex(shape=shape_out)
-        self.b = Complex(shape=shape)
-        self.c = Complex(shape=shape_out)
-        self.d = Complex(shape=shape_out)
+        self.a = ComplexStream(shape=shape_out)
+        self.b = ComplexStream(shape=shape)
+        self.c = ComplexStream(shape=shape_out)
+        self.d = ComplexStream(shape=shape_out)
+        self.o = Signal()
 
     def elaborate(self, platform):
         m = Module()
@@ -130,26 +120,32 @@ class SDFRadix2Butterfly(Elaboratable):
         with m.If(self.s):
             # Butterfly mode
             m.d.comb += [
-                c.eq((a - b).reshape(c.shape)),
-                d.eq((a + b).reshape(d.shape)),
+                c.payload.eq((a.payload - b.payload).reshape(c.shape)),
+                c.valid.eq(a.valid & b.valid),
+                d.payload.eq((a.payload + b.payload).reshape(d.shape)),
+                d.valid.eq(a.valid & b.valid),
+                a.ready.eq(d.produce & b.valid),
+                b.ready.eq(c.produce & d.produce & a.valid),
             ]
         with m.Else():
             # Switch mode
             m.d.comb += [
-                c.eq(b.reshape(c.shape)),
-                d.eq(a.reshape(d.shape)),
+                c.payload.eq(b.payload.reshape(c.shape)),
+                c.valid.eq(b.valid),
+                d.payload.eq(a.payload.reshape(d.shape)),
+                d.valid.eq(a.valid & self.o),
+                a.ready.eq(d.produce & self.o),
+                b.ready.eq(c.produce),
             ]
 
         return m
 
 class SDFRadix2Stage(Elaboratable):
     def __init__(self, N, shape, shape_out=None):
-        shape_out         = shape_out or Q(1 + shape.integer_bits, shape.fraction_bits)
-        self.N            = N
-        self.input        = Complex(shape=shape)
-        self.input_valid  = Signal()
-        self.output       = Complex(shape=shape_out)
-        self.output_valid = Signal()
+        shape_out   = shape_out or Q(1 + shape.integer_bits, shape.fraction_bits)
+        self.N      = N
+        self.input  = ComplexStream(shape=shape)
+        self.output = ComplexStream(shape=shape_out)
 
     def elaborate(self, platform):
         m = Module()
@@ -159,46 +155,38 @@ class SDFRadix2Stage(Elaboratable):
 
         # Internal counter to generate buterfly control signal
         counter = Signal(range(N))
-        with m.If(self.input_valid):
+        with m.If(self.input.consume):
             m.d.sync += counter.eq(counter + 1)
         s = counter[-1]
 
         # Feedback delay
-        m.submodules.delay = delay = Delay(2*len(output_shape), self.N // 2)
+        m.submodules.delay = delay = StreamDelay(2*len(output_shape)+1, self.N // 2)
 
         # Butterfly
         m.submodules.butterfly = butterfly = SDFRadix2Butterfly(input_shape, shape_out=output_shape)
         m.d.comb += [
-            butterfly.s .eq(s),
-            butterfly.a .eq(Complex(shape=output_shape, value=delay.output)),
-            butterfly.b .eq(self.input.reshape(butterfly.b.shape)),
-            delay.input .eq(butterfly.c),
-            self.output .eq(butterfly.d),
-        ]
+            butterfly.s  .eq(s),
+            butterfly.b  .stream_eq(self.input),
+            self.output  .stream_eq(butterfly.d),
 
-        # Downstream valid signals
-        with m.If(s):
-            m.d.comb += [
-                delay.input_valid.eq(delay.output_valid & self.input_valid),
-                self.output_valid.eq(delay.output_valid & self.input_valid),
-            ]
-        with m.Else():
-            m.d.comb += [
-                delay.input_valid.eq(self.input_valid),
-                self.output_valid.eq(delay.output_valid),
-            ]
+            delay.input  .stream_eq(butterfly.c, omit="payload"),
+            delay.input.payload.eq(Cat(butterfly.c.payload, s)),  # flag samples with s
+
+            butterfly.a  .stream_eq(delay.output, omit="payload"),
+            # Top bit of the delay output contains a flag to tell if sample
+            # is ready for output
+            Cat(butterfly.a.payload, butterfly.o).eq(delay.output.payload),
+        ]
 
         return m
 
 class TwiddleStage(Elaboratable):
     def __init__(self, factors, shape, shape_out=None):
-        self.factors        = factors
-        self.shape          = shape
-        self.shape_out      = shape_out or shape
-        self.input          = Complex(shape=shape)
-        self.input_valid    = Signal()
-        self.output         = Complex(shape=self.shape_out)
-        self.output_valid   = Signal()
+        self.factors   = factors
+        self.shape     = shape
+        self.shape_out = shape_out or shape
+        self.input     = ComplexStream(shape=shape)
+        self.output    = ComplexStream(shape=self.shape_out)
 
     def elaborate(self, platform):
         m = Module()
@@ -219,10 +207,12 @@ class TwiddleStage(Elaboratable):
         ]
 
         # Complex rotate and increment counter per input
-        m.d.sync += self.output_valid.eq(self.input_valid)
-        with m.If(self.input_valid):
-            m.d.sync += self.output.eq((self.input * factor).reshape(self.output.shape))
-            m.d.sync += counter.eq(counter + 1)
+        m.d.comb += self.input.ready.eq(self.output.produce)
+        with m.If(self.output.produce):
+            m.d.sync += self.output.valid.eq(self.input.valid)
+            with m.If(self.input.valid):
+                m.d.sync += self.output.payload.eq((self.input.payload * factor).reshape(self.output.shape))
+                m.d.sync += counter.eq(counter + 1)
 
         return m
 
@@ -231,25 +221,25 @@ class R22TwiddleStage(Elaboratable):
     Trivial twiddle stage for Radix-2^2, rotates last quarter of the N samples by -1j
     '''
     def __init__(self, N, shape):
-        self.N              = N
-        self.shape          = shape
-        self.input          = Complex(shape=shape)
-        self.input_valid    = Signal()
-        self.output         = Complex(shape=shape)
-        self.output_valid   = Signal()
+        self.N      = N
+        self.shape  = shape
+        self.input  = ComplexStream(shape=shape)
+        self.output = ComplexStream(shape=shape)
 
     def elaborate(self, platform):
         m = Module()
 
         counter = Signal(range(self.N))
         
-        m.d.sync += self.output_valid.eq(self.input_valid)
-        with m.If(self.input_valid):
-            with m.If(counter[-1] & counter[-2]):  # last quarter
-                m.d.sync += self.output.real.eq( self.input.imag)
-                m.d.sync += self.output.imag.eq(-self.input.real)
-            with m.Else():
-                m.d.sync += self.output.eq(self.input)
-            m.d.sync += counter.eq(counter + 1)
+        m.d.comb += self.input.ready.eq(self.output.produce)
+        with m.If(self.output.produce):
+            m.d.sync += self.output.valid.eq(self.input.valid)
+            with m.If(self.input.valid):
+                with m.If(counter[-1] & counter[-2]):  # last quarter
+                    m.d.sync += self.output.real.eq( self.input.imag)
+                    m.d.sync += self.output.imag.eq(-self.input.real)
+                with m.Else():
+                    m.d.sync += self.output.payload.eq(self.input.payload)
+                m.d.sync += counter.eq(counter + 1)
 
         return m

@@ -56,10 +56,7 @@ class Complex(ValueCastable):
     def eq(self, other):
         if isinstance(other, (Complex, ComplexConst)):
             assert self.shape == other.shape, f"{self.shape} != {other.shape}"
-            return [
-                self.real.eq(other.real),
-                self.imag.eq(other.imag),
-            ]
+            return Cat(self.real, self.imag).eq(Cat(other.real, other.imag))
         else:
             assert len(self.as_value()) == len(other)
             return [ self.as_value().eq(other) ]

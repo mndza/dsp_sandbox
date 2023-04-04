@@ -1,6 +1,8 @@
 from amaranth import *
-from .delay import Delay
 from math import ceil, log2
+
+from .streams import SampleStream
+from .delay import StreamDelay
 
 # TODO: Add documentation
 # Reference:
@@ -18,35 +20,70 @@ class SerialBitExchange(Elaboratable):
         self.L            = 2**j - 2**k
         self.internal_s   = internal_s
         # signals
-        self.input        = Signal(shape)
-        self.input_valid  = Signal()
-        self.output       = Signal(shape)
-        self.output_valid = Signal()
+        self.input        = SampleStream(shape)
+        self.output       = SampleStream(shape)
         if not internal_s:
-            self.s        = Signal()
+            self.s1       = Signal()
+            self.s2       = Signal()
 
     def elaborate(self, platform):
         m = Module()
 
         # Internal delay
-        m.submodules.delay = delay = Delay(shape=self.shape, delay=self.L)
+        m.submodules.delay = delay = StreamDelay(shape=self.shape, delay=self.L)
 
         if self.internal_s:
+            s1 = Signal()
+            s2 = Signal()
             j, k = self.j, self.k
-            counter = Signal(range(2**(j+1)))
-            with m.If(self.input_valid):
-                m.d.sync += counter.eq(counter + 1)
-            s = (~counter[j]) | counter[k]
+            counter_i = Signal(range(2**(j+1)))
+            counter_o = Signal.like(counter_i, reset=self.L)
+            with m.If(delay.input.consume):
+                m.d.sync += counter_i.eq(counter_i + 1)
+            with m.If(self.output.consume):
+                m.d.sync += counter_o.eq(counter_o + 1)
+            m.d.comb += [
+                s1.eq((~counter_i[j]) | counter_i[k]),
+                s2.eq((~counter_o[j]) | counter_o[k]),
+            ]
 
-        # Connections
-        m.d.comb += [
-            # Delay and output muxes
-            delay.input       .eq(Mux(s, self.input, delay.output)),
-            self.output       .eq(Mux(s, delay.output, self.input)),
-            # Valid signals
-            delay.input_valid .eq(Mux(s, self.input_valid, delay.output_valid)),
-            self.output_valid .eq(Mux(s, delay.output_valid, self.input_valid)),
-        ]
+        # Generation of signals for driving the multiplexers
+        # This additional logic synchronizes multiplexers for legal
+        # state changes and avoids stalls
+        m1 = Signal(2)  # additional bit to allow "disabling" muxes
+        m2 = Signal(2)
+        with m.FSM(name="mux_ctl") as fsm:
+            with m.State("0"):
+                m.d.comb += [ m1.eq(0), m2.eq(0) ]
+                with m.If(   s1 & ~s2): m.d.comb += [ m1.eq(2), m2.eq(0) ]
+                with m.Elif(~s1 &  s2): m.d.comb += [ m1.eq(0), m2.eq(2) ]
+                with m.Elif( s1 &  s2):
+                    m.d.comb += [ m1.eq(1), m2.eq(1) ]
+                    m.next = "1"
+            with m.State("1"):
+                m.d.comb += [ m1.eq(1), m2.eq(1) ]
+                with m.If(  ~s1 &  s2): m.d.comb += [ m1.eq(2), m2.eq(1) ]
+                with m.Elif( s1 & ~s2): m.d.comb += [ m1.eq(1), m2.eq(2) ]
+                with m.Elif(~s1 & ~s2):
+                    m.d.comb += [ m1.eq(0), m2.eq(0) ]
+                    m.next = "0"
+
+        # Delay input multiplexer
+        with m.Switch(m1):
+            with m.Case(0):
+                m.d.comb += [
+                    delay.input.stream_eq(delay.output, omit="ready"),
+                    delay.output.ready.eq(1),  # avoid combinatorial loop
+                ]
+            with m.Case(1):
+                m.d.comb += delay.input.stream_eq(self.input)
+        
+        # Output multiplexer
+        with m.Switch(m2):
+            with m.Case(0):
+                m.d.comb += self.output.stream_eq(self.input)
+            with m.Case(1):
+                m.d.comb += self.output.stream_eq(delay.output)
 
         return m
 
@@ -56,11 +93,9 @@ class SerialBitReversal(Elaboratable):
         self.shape = shape
         self.N = N
         # signals
-        self.input        = Signal(shape)
-        self.input_valid  = Signal()
-        self.output       = Signal(shape)
-        self.output_valid = Signal()
-        self.s            = Signal()
+        self.input  = SampleStream(shape)
+        self.output = SampleStream(shape)
+        self.s      = Signal()
 
     def elaborate(self, platform):
         m = Module()
@@ -77,18 +112,10 @@ class SerialBitReversal(Elaboratable):
             j, k = j-1, k+1
 
         # Connect stages
-        last_data  = self.input
-        last_valid = self.input_valid
+        last = self.input
         for stage in stages:
-            m.d.comb += [
-                stage.input       .eq(last_data),
-                stage.input_valid .eq(last_valid),
-            ]
-            last_data  = stage.output
-            last_valid = stage.output_valid
-        m.d.comb += [
-            self.output       .eq(last_data),
-            self.output_valid .eq(last_valid),
-        ]
+            m.d.comb += stage.input.stream_eq(last)
+            last = stage.output
+        m.d.comb += self.output.stream_eq(last)
 
         return m

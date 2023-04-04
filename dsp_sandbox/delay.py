@@ -1,26 +1,38 @@
 from amaranth import *
+from .streams import SampleStream
 
 # TODO: add option for Memory-backed Delay
 
-class Delay(Elaboratable):
+class StreamDelay(Elaboratable):
     def __init__(self, shape, delay):
         self.delay        = delay
-        self.input        = Signal(shape)
-        self.input_valid  = Signal()
-        self.output       = Signal(shape)
-        self.output_valid = Signal()
+        self.shape        = shape
+        self.input        = SampleStream(shape)
+        self.output       = SampleStream(shape)
 
     def elaborate(self, platform):
         m = Module()
 
-        data_in  = Cat(self.input, self.input_valid)
-        data_out = Cat(self.output, self.output_valid)
+        delay_line = [ StreamRegister(self.shape) for _ in range(self.delay) ]
+        m.submodules += delay_line
 
-        delay_line = [ Signal(len(data_in), name=f"delay{i}") for i in range(self.delay) ]
-        m.d.comb += data_out.eq(delay_line[-1])
+        last = self.input
+        for delay in delay_line:
+            m.d.comb += delay.input.stream_eq(last)
+            last = delay.output
+        m.d.comb += self.output.stream_eq(last)
 
-        m.d.sync += delay_line[0].eq(data_in)
-        for i in range(self.delay-1):
-            m.d.sync += delay_line[i+1].eq(delay_line[i])
+        return m
+    
+class StreamRegister(Elaboratable):
+    def __init__(self, shape):
+        self.input  = SampleStream(shape)
+        self.output = SampleStream(shape)
 
+    def elaborate(self, platform):
+        m = Module()
+        m.d.comb += self.input.ready.eq(self.output.produce)
+        with m.If(self.output.produce):
+            m.d.sync += self.output.valid.eq(self.input.valid)
+            m.d.sync += self.output.payload.eq(self.input.payload)
         return m
