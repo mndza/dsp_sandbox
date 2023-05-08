@@ -121,8 +121,8 @@ class SDFRadix2Butterfly(Elaboratable):
             # Butterfly mode
             m.d.comb += [
                 c.payload.eq((a.payload - b.payload).reshape(c.shape)),
-                c.valid.eq(a.valid & b.valid),
                 d.payload.eq((a.payload + b.payload).reshape(d.shape)),
+                c.valid.eq(a.valid & b.valid & d.produce),
                 d.valid.eq(a.valid & b.valid),
                 a.ready.eq(d.produce & b.valid),
                 b.ready.eq(c.produce & d.produce & a.valid),
@@ -131,11 +131,11 @@ class SDFRadix2Butterfly(Elaboratable):
             # Switch mode
             m.d.comb += [
                 c.payload.eq(b.payload.reshape(c.shape)),
-                c.valid.eq(b.valid),
                 d.payload.eq(a.payload.reshape(d.shape)),
+                c.valid.eq(b.valid & d.produce),
                 d.valid.eq(a.valid & self.o),
                 a.ready.eq(d.produce & self.o),
-                b.ready.eq(c.produce),
+                b.ready.eq(c.produce & d.produce),
             ]
 
         return m
@@ -232,7 +232,7 @@ class R22TwiddleStage(Elaboratable):
         counter = Signal(range(self.N))
         
         m.d.comb += self.input.ready.eq(self.output.produce)
-        with m.If(self.output.produce):
+        with m.If(self.input.ready):
             m.d.sync += self.output.valid.eq(self.input.valid)
             with m.If(self.input.valid):
                 with m.If(counter[-1] & counter[-2]):  # last quarter
