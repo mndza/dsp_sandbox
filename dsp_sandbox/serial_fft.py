@@ -4,7 +4,7 @@ from cmath import exp, pi
 from math import ceil, log2
 from enum import IntEnum
 
-from .types.fixed_point import Q
+from .types.fixed_point import Q, FixedPointValue
 from .types.complex import Complex, ComplexConst
 from .streams import ComplexStream
 from .bit_exchange import SerialBitReversal
@@ -206,13 +206,59 @@ class TwiddleStage(Elaboratable):
             factor          .eq(twiddle_rd.data),
         ]
 
-        # Complex rotate and increment counter per input
-        m.d.comb += self.input.ready.eq(self.output.produce)
-        with m.If(self.output.produce):
-            m.d.sync += self.output.valid.eq(self.input.valid)
+        # Perform complex rotation with three real multipliers
+        #   k1 = b * (c - d)
+        #   k2 = c * (a - b)
+        #   k3 = d * (a + b)
+        #   real = k1 + k2
+        #   imag = k1 + k3
+
+        a, b = self.input.real, self.input.imag
+        c, d = factor.real, factor.imag
+        
+        sub_cd = FixedPointValue(shape=(c - d).shape)
+        sub_ab = FixedPointValue(shape=(a - b).shape)
+        add_ab = FixedPointValue(shape=(a + b).shape)
+        k1     = FixedPointValue(shape=(b * sub_cd).shape)
+        k2     = FixedPointValue(shape=(c * sub_ab).shape)
+        k3     = FixedPointValue(shape=(d * add_ab).shape)
+        b_r    = FixedPointValue(shape=b.shape)
+        c_r    = FixedPointValue(shape=c.shape)
+        d_r    = FixedPointValue(shape=d.shape)
+
+        s0_valid = Signal()
+        s0_ready = Signal()
+        s1_valid = Signal()
+        s1_ready = Signal()
+
+        # Split the operation in 3 cycles / stages for faster clock rates
+
+        m.d.comb += self.input.ready.eq(s0_ready | ~s0_valid)
+        with m.If(self.input.ready):
+            m.d.sync += s0_valid.eq(self.input.valid)
             with m.If(self.input.valid):
-                m.d.sync += self.output.payload.eq((self.input.payload * factor).reshape(self.output.shape))
+                m.d.sync += sub_cd.eq(c - d)
+                m.d.sync += sub_ab.eq(a - b)
+                m.d.sync += add_ab.eq(a + b)
+                m.d.sync += b_r.eq(b)
+                m.d.sync += c_r.eq(c)
+                m.d.sync += d_r.eq(d)
                 m.d.sync += counter.eq(counter + 1)
+
+        m.d.comb += s0_ready.eq(s1_ready | ~s1_valid)
+        with m.If(s0_ready):
+            m.d.sync += s1_valid.eq(s0_valid)
+            with m.If(s0_valid):
+                m.d.sync += k1.eq(b_r * sub_cd)
+                m.d.sync += k2.eq(c_r * sub_ab)
+                m.d.sync += k3.eq(d_r * add_ab)
+        
+        m.d.comb += s1_ready.eq(self.output.produce)
+        with m.If(s1_ready):
+            m.d.sync += self.output.valid.eq(s1_valid)
+            with m.If(s1_valid):
+                m.d.sync += self.output.real.eq((k1 + k2).reshape(self.output.shape))
+                m.d.sync += self.output.imag.eq((k1 + k3).reshape(self.output.shape))
 
         return m
 
