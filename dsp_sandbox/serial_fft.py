@@ -9,6 +9,7 @@ from .types.complex import Complex, ComplexConst
 from .streams import ComplexStream
 from .bit_exchange import SerialBitReversal
 from .delay import StreamDelay
+from .skid_buffer import StreamSkidBuffer
 
 # TODO:
 # - Add optional scaling / rounding
@@ -69,6 +70,8 @@ class SerialFFT(Elaboratable):
                 for k2 in range(2):
                     w += [ (n3*(k1+2*k2), N) for n3 in range(N//4) ]
             stages += [ TwiddleStage(factors=w, shape=shape) ]
+            # Break long combinatorial paths using a skid buffer
+            stages += [ StreamSkidBuffer(ComplexStream, shape=shape, reg_output=True) ]
             N = N // 4
 
         # Radix-2 stages
@@ -80,6 +83,8 @@ class SerialFFT(Elaboratable):
             # Twiddle factors
             w = [ (0, N) ] * (N//2) + [ (k, N) for k in range(N//2) ]
             stages += [ TwiddleStage(factors=w, shape=shape) ]
+            # Break long combinatorial paths using a skid buffer
+            stages += [ StreamSkidBuffer(ComplexStream, shape=shape, reg_output=True) ]
             N = N // 2
 
         # Optional bit reversal stage at the end
