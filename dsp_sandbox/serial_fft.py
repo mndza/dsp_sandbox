@@ -104,47 +104,6 @@ class SerialFFT(Elaboratable):
         return m
 
 
-class SDFRadix2Butterfly(Elaboratable):
-    '''
-    Radix-2 butterfly for Single-path Delay Feedback FFT
-    '''
-    def __init__(self, shape, shape_out=None):
-        shape_out = shape_out or Q(1 + shape.integer_bits, shape.fraction_bits)
-        self.s = Signal()
-        self.a = ComplexStream(shape=shape_out)
-        self.b = ComplexStream(shape=shape)
-        self.c = ComplexStream(shape=shape_out)
-        self.d = ComplexStream(shape=shape_out)
-        self.o = Signal()
-
-    def elaborate(self, platform):
-        m = Module()
-
-        a, b, c, d = self.a, self.b, self.c, self.d
-
-        with m.If(self.s):
-            # Butterfly mode
-            m.d.comb += [
-                c.payload.eq((a.payload - b.payload).reshape(c.shape)),
-                d.payload.eq((a.payload + b.payload).reshape(d.shape)),
-                c.valid.eq(a.valid & b.valid & d.produce),
-                d.valid.eq(a.valid & b.valid),
-                a.ready.eq(d.produce & b.valid),
-                b.ready.eq(c.produce & d.produce & a.valid),
-            ]
-        with m.Else():
-            # Switch mode
-            m.d.comb += [
-                c.payload.eq(b.payload.reshape(c.shape)),
-                d.payload.eq(a.payload.reshape(d.shape)),
-                c.valid.eq(b.valid & d.produce),
-                d.valid.eq(a.valid & self.o),
-                a.ready.eq(d.produce & self.o),
-                b.ready.eq(c.produce & d.produce),
-            ]
-
-        return m
-
 class SDFRadix2Stage(Elaboratable):
     def __init__(self, N, shape, shape_out=None):
         shape_out   = shape_out or Q(1 + shape.integer_bits, shape.fraction_bits)
@@ -156,7 +115,7 @@ class SDFRadix2Stage(Elaboratable):
         m = Module()
 
         N = self.N
-        input_shape, output_shape = self.input.shape, self.output.shape
+        output_shape = self.output.shape
 
         # Internal counter to generate buterfly control signal
         counter = Signal(range(N))
@@ -164,24 +123,49 @@ class SDFRadix2Stage(Elaboratable):
             m.d.sync += counter.eq(counter + 1)
         s = counter[-1]
 
-        # Feedback delay
+        # Upstream signaling
+        m.d.comb += self.input.ready.eq(self.output.produce)
+
+        # Define butterfly signals
+        a = ComplexStream(shape=output_shape)
+        b = self.input
+        c = ComplexStream(shape=output_shape)
+        d = self.output
+
+        # Feedback memory / delay
+        # We use an additional bit in the feedback memory to indicate whether a sample
+        # has been processed by the butterfly. This avoids holding these samples in the
+        # buffer until the arrival of new valid input samples.
         m.submodules.delay = delay = StreamDelay(2*len(output_shape)+1, self.N // 2)
-
-        # Butterfly
-        m.submodules.butterfly = butterfly = SDFRadix2Butterfly(input_shape, shape_out=output_shape)
+        o = Signal()
         m.d.comb += [
-            butterfly.s  .eq(s),
-            butterfly.b  .stream_eq(self.input),
-            self.output  .stream_eq(butterfly.d),
-
-            delay.input  .stream_eq(butterfly.c, omit="payload"),
-            delay.input.payload.eq(Cat(butterfly.c.payload, s)),  # flag samples with s
-
-            butterfly.a  .stream_eq(delay.output, omit="payload"),
-            # Top bit of the delay output contains a flag to tell if sample
-            # is ready for output
-            Cat(butterfly.a.payload, butterfly.o).eq(delay.output.payload),
+            # feedback memory input
+            delay.input.valid   .eq(c.valid),
+            delay.input.payload .eq(Cat(c.payload, s)),     # flag samples with s
+            # feedback memory output
+            a.valid             .eq(delay.output.valid),
+            Cat(a.payload, o)   .eq(delay.output.payload),
+            delay.output.ready  .eq(a.ready),
         ]
+
+        # Radix-2 butterfly for Single-path Delay Feedback FFT
+        # Two operation modes depending on `s`
+        with m.If(s):
+            m.d.comb += [
+                c.payload.eq((a.payload - b.payload).reshape(c.shape)),
+                d.payload.eq((a.payload + b.payload).reshape(d.shape)),
+                c.valid  .eq(a.valid & b.valid),
+                d.valid  .eq(a.valid & b.valid),
+                a.ready  .eq(d.produce & b.valid),
+            ]
+        with m.Else():
+            m.d.comb += [
+                c.payload.eq(b.payload.reshape(c.shape)),
+                d.payload.eq(a.payload.reshape(d.shape)),
+                c.valid  .eq(b.valid),
+                d.valid  .eq(a.valid & o),
+                a.ready  .eq(d.produce & o),
+            ]
 
         return m
 
