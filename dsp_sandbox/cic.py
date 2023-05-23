@@ -49,7 +49,9 @@ class UpsamplingCICFilter(Elaboratable):
         for stage in stages:
             m.d.comb += stage.input.stream_eq(last)
             last = stage.output
-        m.d.comb += self.output.stream_eq(last)
+        m.d.comb += self.output.payload.eq((last.payload >> (len(last.real.shape) - self.width_out)).reshape(self.output.shape))
+        m.d.comb += self.output.stream_eq(last, omit="payload")
+
 
         return m
 
@@ -58,7 +60,6 @@ class DownsamplingCICFilter(Elaboratable):
     def __init__(self, M, stages, rate, width_in, width_out=None):
         self.width_in     = width_in
         self.width_out    = width_out or (self.width_in + ceil(stages * log2(rate * M)))
-        print(self.width_out)
         self.M            = M
         self.stages       = stages
         self.rate         = rate
@@ -87,8 +88,6 @@ class DownsamplingCICFilter(Elaboratable):
             stage_width = full_width - trunc[i]
             stages += [ IntegratorStage(stage_width, stage_width) ]
 
-        print('LEL')
-
         # Downsampling
         if self.rate != 1:
             stages += [ Downsampler(stage_width, self.rate) ]
@@ -106,10 +105,8 @@ class DownsamplingCICFilter(Elaboratable):
                 m.d.comb += stage.input.payload.eq(last.payload.reshape(stage.input.shape))
             elif i < self.stages:
                 m.d.comb += stage.input.payload.eq((last.payload >> (trunc2[i])).reshape(stage.input.shape))
-                print(trunc[i])
             else:
                 m.d.comb += stage.input.payload.eq((last.payload >> trunc2[i-1]).reshape(stage.input.shape))
-                print(trunc[i-1])
             m.d.comb += stage.input.stream_eq(last, omit="payload")
             last = stage.output
         m.d.comb += self.output.payload.eq((last.payload >> trunc2[-1]).reshape(self.output.shape))

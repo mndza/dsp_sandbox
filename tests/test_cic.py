@@ -32,13 +32,12 @@ def cic_downsample(samples, rate, M, stages):
 
 class TestCIC(unittest.TestCase):
 
-    '''
     def test_upsampling_cic(self):
         M = 20
         rate = 5
         stages = 3
         shape = Q(12, 0)
-        dut = UpsamplingCICFilter(M=M, stages=stages, rate=rate, width_in=len(shape), width_out=len(shape)+5)
+        dut = UpsamplingCICFilter(M=M, stages=stages, rate=rate, width_in=len(shape), width_out=len(shape)+10)
 
         samples = np.random.uniform(-1, 1, 1000) + 1j * np.random.uniform(-1, 1, 1000)
         samples *= ((1 << 11) - 1)
@@ -47,12 +46,11 @@ class TestCIC(unittest.TestCase):
         input_sequence = map(lambda x: ComplexConst(shape=shape, value=x), samples)
         out = stream_process(dut, dut.input, dut.output, input_sequence, cycles=6000)
         expected = cic_upsample(samples, rate, M, stages)
-        expected = [ x / (2 ** (13-5)) for x in expected ]
+        expected = [ x / (2 ** 3) for x in expected ]
         expected = [ (floor(x.real) + 1j*floor(x.imag)) for x in expected ]
         print(out[:10])
         print(expected[:10])
         self.assertTrue(np.array_equal(out, expected))
-    '''
 
     def test_downsampling_cic(self):
         M = 20
@@ -75,7 +73,7 @@ class TestCIC(unittest.TestCase):
         expected = [ (floor(x.real) + 1j*floor(x.imag)) for x in expected ]
 
         for a,b in zip(out, expected):
-            print(a,b)
+            #print(a,b)
             assert abs(a - b) < 2
         #self.assertTrue(np.array_equal(out, expected))
 
