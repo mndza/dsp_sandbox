@@ -9,49 +9,48 @@ class UpsamplingCICFilter(Elaboratable):
         self.stages       = stages
         self.rate         = rate
         self.width_in     = width_in
-        self.width_out    = width_out or (width_in + self.bit_growth_summary()[-1])
-        assert M % rate == 0  # allow M multiple of rate
+        self.width_out    = width_out or (width_in + self.bit_growths()[-1])
         self.input        = ComplexStream(Q(self.width_in, 0))
-        #growth = self.bit_growth_summary()[-1]
         self.output       = ComplexStream(Q(self.width_out, 0))
 
-    def bit_growth_summary(self):
-        # Comb stages add +1 bit each
-        #bit_growths = [ self.width + 1 + i for i in range(self.stages) ]
-        # Integrator stages are a bit more complex and we get the max growths by simulation
-        #bit_growths += get_integrator_bit_growths(stages=self.stages, M=self.M)
-        bit_growths = cic_growth(N=self.stages, M=self.M, R=1)
+    def bit_growths(self):
+        bit_growths = cic_growth(N=self.stages, M=self.M, R=self.rate)
         return bit_growths
-    
-    #def plot_response(self):
 
     def elaborate(self, platform):
         m = Module()
 
-        bit_growths = self.bit_growth_summary()
-        #print(f'bit growths {bit_growths}')
-        input_widths = [self.width_in + g for g in [0]+bit_growths[:-1]]
-    
+        stages = []
+
+        # Calculated bit growths only used below for integrator stages
+        bit_growths = iter(self.bit_growths()[self.stages:])
+
         # Comb stages
-        comb_in_w = input_widths[:len(input_widths)//2]
-        stages  = [ CombStage(self.M // self.rate, w) for w in comb_in_w]
+        width = self.width_in
+        for i in range(self.stages):
+            stages += [ CombStage(self.M, width) ]
+            width += 1
+        
         # Upsampling
         if self.rate != 1:
-            upsampler_in_w = input_widths[len(input_widths)//2]
-            stages += [ Upsampler(upsampler_in_w, self.rate) ]
+            stages += [ Upsampler(width, self.rate) ]
+        
         # Integrator stages
-        int_in_w = input_widths[len(input_widths)//2:]
-        stages += [ IntegratorStage(in_w, self.width_in + g) for in_w, g in zip(int_in_w, bit_growths[len(input_widths)//2:]) ]
+        for i in range(self.stages):
+            width_out = self.width_in + next(bit_growths)
+            stages += [ IntegratorStage(width, width_out) ]
+            width = width_out
 
-        # Connect stages
+        # Connect all stages to build the final filter
+        # For the upsampling CIC, we can only drop bits at the last stage
         m.submodules += stages
         last = self.input
         for stage in stages:
             m.d.comb += stage.input.stream_eq(last)
             last = stage.output
-        m.d.comb += self.output.payload.eq((last.payload >> (len(last.real.shape) - self.width_out)).reshape(self.output.shape))
+        truncate = max(0, width - self.width_out)
+        m.d.comb += self.output.payload.eq((last.payload >> truncate).reshape(self.output.shape))
         m.d.comb += self.output.stream_eq(last, omit="payload")
-
 
         return m
 
@@ -63,29 +62,24 @@ class DownsamplingCICFilter(Elaboratable):
         self.M            = M
         self.stages       = stages
         self.rate         = rate
-        assert M % rate == 0  # allow M multiple of rate
         self.input        = ComplexStream(Q(self.width_in, 0))
         self.output       = ComplexStream(Q(self.width_out, 0))
 
     def truncation_summary(self):
-        return cic_truncation(N=self.stages, R=self.rate, M=self.M, Bin=self.width_in, Bout=self.width_out)
-
-    #def plot_response(self):
+        return cic_truncation(N=self.stages, R=self.rate, M=self.M, 
+                              Bin=self.width_in, Bout=self.width_out)
 
     def elaborate(self, platform):
         m = Module()
 
         stages = []
 
-        trunc = self.truncation_summary()
         full_width = self.width_in + ceil(self.stages * log2(self.rate * self.M))
-        je = [full_width - x for x in trunc]
-        trunc2 = [ (je[i-1] if i>0 else full_width) - je[i] for i in range(len(je)) ]
+        stage_widths = ( full_width - n for n in self.truncation_summary() )
 
         # Integrator stages
-        stage_width = full_width
         for i in range(self.stages):
-            stage_width = full_width - trunc[i]
+            stage_width = next(stage_widths)
             stages += [ IntegratorStage(stage_width, stage_width) ]
 
         # Downsampling
@@ -94,35 +88,34 @@ class DownsamplingCICFilter(Elaboratable):
 
         # Comb stages
         for i in range(self.stages):
-            stage_width = full_width - trunc[self.stages + i]
-            stages += [ CombStage(self.M // self.rate, stage_width, stage_width) ]
+            stage_width = next(stage_widths)
+            stages += [ CombStage(self.M, stage_width, stage_width) ]
 
-        # Connect stages
+        # Connect stages, truncating where needed
         m.submodules += stages
         last = self.input
-        for i, stage in enumerate(stages):
-            if i == self.stages:
-                m.d.comb += stage.input.payload.eq(last.payload.reshape(stage.input.shape))
-            elif i < self.stages:
-                m.d.comb += stage.input.payload.eq((last.payload >> (trunc2[i])).reshape(stage.input.shape))
-            else:
-                m.d.comb += stage.input.payload.eq((last.payload >> trunc2[i-1]).reshape(stage.input.shape))
+        for stage in stages:
+            diff = len(last.payload.shape) - len(stage.input.shape)  # width difference
+            input_pld = last.payload >> diff if diff > 0 else last.payload
+            m.d.comb += stage.input.payload.eq(input_pld.reshape(stage.input.shape))
             m.d.comb += stage.input.stream_eq(last, omit="payload")
             last = stage.output
-        m.d.comb += self.output.payload.eq((last.payload >> trunc2[-1]).reshape(self.output.shape))
-        m.d.comb += self.output.stream_eq(last, omit="payload")
 
+        diff = len(last.payload.shape) - len(self.output.shape)
+        input_pld = last.payload >> diff if diff > 0 else last.payload
+        m.d.comb += self.output.payload.eq(input_pld.reshape(self.output.shape))
+        m.d.comb += self.output.stream_eq(last, omit="payload")
+        
         return m
 
 
 class CombStage(Elaboratable):
-    def __init__(self, M, width_in, width_out=None, truncate=0):
+    def __init__(self, M, width_in, width_out=None):
         self.M         = M
         self.width_in  = width_in
         self.width_out = width_out or width_in + 1
         self.input     = ComplexStream(Q(self.width_in, 0))
         self.output    = ComplexStream(Q(self.width_out, 0))  # 1-bit growth
-        self.trunc     = truncate
 
     def bit_growth(self):
         return 1
@@ -143,11 +136,11 @@ class CombStage(Elaboratable):
         
         return m
 
+
 class IntegratorStage(Elaboratable):
-    def __init__(self, width_in, width_out, truncate=0):
+    def __init__(self, width_in, width_out):
         self.input  = ComplexStream(Q(width_in, 0))
         self.output = ComplexStream(Q(width_out, 0))
-        self.trunc = truncate
 
     def elaborate(self, platform):
         m = Module()
@@ -161,6 +154,7 @@ class IntegratorStage(Elaboratable):
         
         return m
     
+
 class Upsampler(Elaboratable):
     def __init__(self, width, factor):
         self.factor = factor
@@ -182,7 +176,7 @@ class Upsampler(Elaboratable):
                     m.d.sync += counter.eq(counter_next)
             with m.Else():
                 m.d.sync += self.output.valid.eq(1)
-                m.d.sync += self.output.payload.eq(ComplexConst(self.input.shape, value=0))
+                m.d.sync += self.output.payload.eq(ComplexConst(self.input.shape, 0))
                 m.d.sync += counter.eq(counter_next)
 
         return m
@@ -284,10 +278,7 @@ def cic_truncation(N, R, M, Bin, Bout=None):
         B_i = floor(0.5 * (-log2(ou) + t))    # Eq. (21) from [1]
         truncation.append(max(0, B_i))
     truncation.append(max(0, B_last))
-    # From [2]: fix case where input is truncated prior to any filtering
-    if truncation[0] == 1:
-        truncation[0] = 0
-        truncation[1] += 1
+    truncation[0] = 0  # [2]: fix case where input is truncated prior to any filtering
     return truncation
 
 # CIC upsamplers / interpolators

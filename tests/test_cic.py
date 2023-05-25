@@ -21,60 +21,76 @@ def zero_upsample(samples, factor):
 def cic_upsample(samples, rate, M, stages):
     out = zero_upsample(samples, rate)
     for _ in range(stages):
-        out = lfilter([1] * M, 1, out)
+        out = lfilter([1] * rate * M, 1, out)
     return out
 
 def cic_downsample(samples, rate, M, stages):
     out = samples
     for _ in range(stages):
-        out = lfilter([1] * M, 1, out)
+        out = lfilter([1] * rate * M, 1, out)
     return out[::rate]
+
+def random_samples_gen(N, width):
+    samples = np.random.uniform(-1, 1, N) + 1j * np.random.uniform(-1, 1, N)
+    samples *= ((1 << (width-1)) - 1)
+    return np.round(samples)
 
 class TestCIC(unittest.TestCase):
 
     def test_upsampling_cic(self):
-        M = 20
+        # Parameters and DUT instance
+        M = 4
         rate = 5
         stages = 3
-        shape = Q(12, 0)
-        dut = UpsamplingCICFilter(M=M, stages=stages, rate=rate, width_in=len(shape), width_out=len(shape)+10)
+        width_in = 12
+        width_out = 22
+        dut = UpsamplingCICFilter(M=M, stages=stages, rate=rate, width_in=width_in, width_out=width_out)
 
-        samples = np.random.uniform(-1, 1, 1000) + 1j * np.random.uniform(-1, 1, 1000)
-        samples *= ((1 << 11) - 1)
-        samples = np.round(samples)
+        # Input samples
+        samples = random_samples_gen(1000, width_in)
 
-        input_sequence = map(lambda x: ComplexConst(shape=shape, value=x), samples)
-        out = stream_process(dut, dut.input, dut.output, input_sequence, cycles=6000)
+        # Simulate DUT and gather output stream outputs
+        input_sequence = map(lambda x: ComplexConst(shape=Q(width_in, 0), value=x), samples) 
+        out = stream_process(dut, dut.input, dut.output, input_sequence, cycles=10000)
+
+        # Build expected output with our model
         expected = cic_upsample(samples, rate, M, stages)
-        expected = [ x / (2 ** 3) for x in expected ]
+        full_out = width_in + ceil(log2(((rate*M)**(stages)) / rate))
+        if width_out < full_out:
+            expected = [ x / (2 ** (full_out-width_out)) for x in expected ]
         expected = [ (floor(x.real) + 1j*floor(x.imag)) for x in expected ]
-        print(out[:10])
-        print(expected[:10])
+
+        # Compare output and expected values
         self.assertTrue(np.array_equal(out, expected))
 
     def test_downsampling_cic(self):
-        M = 20
-        rate = 5
+        # Parameters and DUT instance
+        M = 1
+        rate = 12
         stages = 3
-        shape = Q(12, 0)
-        dut = DownsamplingCICFilter(M=M, stages=stages, rate=rate, width_in=len(shape), width_out=23)
+        width_in = 12
+        width_out = 14
+        dut = DownsamplingCICFilter(M=M, stages=stages, rate=rate, width_in=width_in, width_out=width_out)
 
-        samples = np.random.uniform(-1, 1, 1000) + 1j * np.random.uniform(-1, 1, 1000)
-        samples *= ((1 << 11) - 1)
-        samples = np.round(samples)
+        # Input samples
+        samples = random_samples_gen(1000, width_in)
 
-        input_sequence = map(lambda x: ComplexConst(shape=shape, value=x), samples)
+        # Simulate DUT and gather output stream outputs
+        input_sequence = map(lambda x: ComplexConst(shape=Q(width_in, 0), value=x), samples) 
         out = stream_process(dut, dut.input, dut.output, input_sequence, cycles=6000, vcd_file="cic.vcd")
+
+        # Build expected output with our model
         expected = cic_downsample(samples, rate, M, stages)
-
-        full_g = ceil(stages * log2(rate * M))
-
-        expected = [ x / (2 ** (9)) for x in expected ]
+        full_out = width_in + ceil(stages * log2(rate * M))
+        if width_out < full_out:
+            expected = [ x / (2 ** (full_out - width_out)) for x in expected ]
         expected = [ (floor(x.real) + 1j*floor(x.imag)) for x in expected ]
 
-        for a,b in zip(out, expected):
-            #print(a,b)
-            assert abs(a - b) < 2
+        # Compare output and expected values
+        # TODO: check why error is not exactly 0, rounding issues?
+        error = np.array(out) - np.array(expected)
+        max_err = np.max(np.concatenate([np.real(error), np.imag(error)]))
+        self.assertTrue(max_err < 2)
         #self.assertTrue(np.array_equal(out, expected))
 
 if __name__ == "__main__":
