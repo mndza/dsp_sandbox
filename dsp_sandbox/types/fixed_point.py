@@ -143,3 +143,6 @@ class FixedPointValue(ValueCastable):
         else:
             new_shape = self.shape
         return new_shape.value(-self.value)
+
+    def __rshift__(self, shift):
+        return self.shape.value(self.value >> shift)

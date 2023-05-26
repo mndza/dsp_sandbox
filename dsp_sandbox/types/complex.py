@@ -96,6 +96,6 @@ class Complex(ValueCastable):
         return Complex(value=(real, imag))
 
     def __rshift__(self, shift):
-        real = self.real >> 1
-        imag = self.imag >> 1
+        real = self.real >> shift
+        imag = self.imag >> shift
         return Complex(value=(real, imag))
