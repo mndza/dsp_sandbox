@@ -26,13 +26,13 @@ class Complex(ValueCastable):
         if value is None:
             if shape is None:
                 raise ValueError(f"must specify `shape` argument")
-            self.real = shape.value(name=self.name+'_real')
-            self.imag = shape.value(name=self.name+'_imag')
+            self.real = shape(name=self.name+'_real')
+            self.imag = shape(name=self.name+'_imag')
         elif isinstance(value, complex):
             if shape is None:
                 raise ValueError(f"must specify `shape` argument for complex value '{value}'")
-            self.real = shape.value(value.real, name=self.name+'_real')
-            self.imag = shape.value(value.imag, name=self.name+'_imag')
+            self.real = shape(value.real, name=self.name+'_real')
+            self.imag = shape(value.imag, name=self.name+'_imag')
         elif isinstance(value, tuple) and isinstance(value[0], FixedPointValue) and isinstance(value[1], FixedPointValue):
             assert shape is None
             self.real = value[0]
@@ -47,8 +47,8 @@ class Complex(ValueCastable):
             if shape.signed:
                 real = real.as_signed()
                 imag = imag.as_signed()
-            self.real = shape.value(real)
-            self.imag = shape.value(imag)
+            self.real = shape(real)
+            self.imag = shape(imag)
             self.shape = shape
         else:
             raise TypeError(f"unsupported value {type(value)}")

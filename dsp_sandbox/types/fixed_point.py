@@ -19,9 +19,12 @@ class FixedPointShape(ShapeCastable):
         """Convert the representation defined by the layout to an unsigned :class:`Shape`."""
         return Shape(len(self), self.signed)
 
-    def value(self, value=None, name=None):
+    def __call__(self, value=None, name=None):
         """Create a FixedPointValue with this shape"""
         return FixedPointValue(self, value=value, name=name)
+    
+    def const(self, value):
+        return FixedPointConst(self, value=value or 0)
 
     def __eq__(self, other):
         return self.integer_bits == other.integer_bits \
@@ -58,6 +61,8 @@ class FixedPointValue(ValueCastable):
         self.name = name or tracer.get_var_name(depth=2, default="FixedPoint")
         if value is None:
             self.value = Signal(shape, name=self.name)
+        elif isinstance(value, FixedPointValue):
+            self.value = value.value
         elif isinstance(value, Value):
             self.value = value
         elif isinstance(value, (int, float)):
@@ -121,28 +126,28 @@ class FixedPointValue(ValueCastable):
         integer_bits = max(self.shape.integer_bits, other.shape.integer_bits)+1
         signed = self.shape.signed or other.shape.signed
         new_shape = Q(integer_bits, self.shape.fraction_bits, signed)
-        return new_shape.value(self.value + other.value)
+        return new_shape(self.value + other.value)
 
     def __sub__(self, other):
         self, other = self._align(other)
         integer_bits = max(self.shape.integer_bits, other.shape.integer_bits)+1
         signed = self.shape.signed or other.shape.signed
         new_shape = Q(integer_bits, self.shape.fraction_bits, signed)
-        return new_shape.value(self.value - other.value)
+        return new_shape(self.value - other.value)
 
     def __mul__(self, other):
         integer_bits = self.shape.integer_bits + other.shape.integer_bits
         fraction_bits = self.shape.fraction_bits + other.shape.fraction_bits
         signed = self.shape.signed or other.shape.signed
         new_shape = Q(integer_bits, fraction_bits, signed)
-        return new_shape.value(self.value * other.value)
+        return new_shape(self.value * other.value)
 
     def __neg__(self):
         if not self.shape.signed:
             new_shape = Q(self.shape.integer_bits + 1, self.shape.fraction_bits)
         else:
             new_shape = self.shape
-        return new_shape.value(-self.value)
+        return new_shape(-self.value)
 
     def __rshift__(self, shift):
-        return self.shape.value(self.value >> shift)
+        return self.shape(self.value >> shift)
