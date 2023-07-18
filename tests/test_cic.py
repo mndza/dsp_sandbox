@@ -11,7 +11,7 @@ from stream_helper import stream_process
 import numpy as np
 from scipy.signal import lfilter
 
-from math import floor, ceil, log2
+from math import floor, ceil, log2, factorial
 
 def zero_upsample(samples, factor):
     upsampled = np.zeros(factor*len(samples), dtype=np.complex64)
@@ -37,7 +37,41 @@ def random_samples_gen(N, width):
 
 class TestCIC(unittest.TestCase):
 
-    def test_upsampling_cic(self):
+    def test_impulse_and_step(self):
+        """
+        Reference: "Two Easy Ways To Test Multistage CIC Decimation Filters" by Rick Lyons
+        https://www.dsprelated.com/showarticle/1171.php
+        """
+        M, D, S = 1, 5, 3
+        width_in = 12
+        dut = DownsamplingCICFilter(M=M, stages=S, rate=D, width_in=width_in)
+
+        # Impulse tests
+        impulse = [1.0] + [0.0]*99
+        # Simulate DUT and gather output stream outputs
+        input_sequence = map(lambda x: ComplexConst(shape=Q(width_in, 0), value=x), impulse)
+        out_impulse = stream_process(dut, dut.input, dut.output, input_sequence, cycles=100)
+        # The unit-sample impulse response of an S-stage decimation filter (D >= S)
+        # will be S non-zero-valued samples followed by an all-zeros sequence
+        self.assertEqual(len(np.nonzero(out_impulse[:S])[0]), S)
+        # Check second output sample of impulse output against reference formula
+        y_out_1 = out_impulse[1].real
+        expected = (factorial(D+S-1) / (factorial(D) * factorial(S-1))) - S
+        self.assertEqual(y_out_1, expected)
+
+        # Step tests
+        step = [1.0] * 100
+        input_sequence = map(lambda x: ComplexConst(shape=Q(width_in, 0), value=x), step)
+        out_step = stream_process(dut, dut.input, dut.output, input_sequence, cycles=100)
+        # Check step output stable amplitude
+        step_amplitude = D**S
+        self.assertTrue((np.real(out_step[S:]) == step_amplitude).all())
+        # Check second output sample of step output against reference formula
+        y_out_1 = out_step[1].real
+        expected = (factorial(D+S) / (factorial(D) * factorial(S))) - S
+        self.assertEqual(y_out_1, expected)
+
+    def test_upsampling_cic_random(self):
         # Parameters and DUT instance
         M = 4
         rate = 5
@@ -50,7 +84,7 @@ class TestCIC(unittest.TestCase):
         samples = random_samples_gen(1000, width_in)
 
         # Simulate DUT and gather output stream outputs
-        input_sequence = map(lambda x: ComplexConst(shape=Q(width_in, 0), value=x), samples) 
+        input_sequence = map(lambda x: ComplexConst(shape=Q(width_in, 0), value=x), samples)
         out = stream_process(dut, dut.input, dut.output, input_sequence, cycles=10000)
 
         # Build expected output with our model
@@ -63,7 +97,7 @@ class TestCIC(unittest.TestCase):
         # Compare output and expected values
         self.assertTrue(np.array_equal(out, expected))
 
-    def test_downsampling_cic(self):
+    def test_downsampling_cic_random(self):
         # Parameters and DUT instance
         M = 1
         rate = 12
@@ -76,8 +110,8 @@ class TestCIC(unittest.TestCase):
         samples = random_samples_gen(1000, width_in)
 
         # Simulate DUT and gather output stream outputs
-        input_sequence = map(lambda x: ComplexConst(shape=Q(width_in, 0), value=x), samples) 
-        out = stream_process(dut, dut.input, dut.output, input_sequence, cycles=6000, vcd_file="cic.vcd")
+        input_sequence = map(lambda x: ComplexConst(shape=Q(width_in, 0), value=x), samples)
+        out = stream_process(dut, dut.input, dut.output, input_sequence, cycles=6000)
 
         # Build expected output with our model
         expected = cic_downsample(samples, rate, M, stages)
