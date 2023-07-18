@@ -1,6 +1,6 @@
 from amaranth import Elaboratable, Module, Shape, Signal, Mux, EnableInserter
 from .streams import ComplexStream
-from .types.fixed_point import Q, FixedPointConst
+from .types.fixed_point import Q, FixedPointConst, FixedPointRounding
 from .types.complex import Complex, ComplexConst
 
 class UpsamplingCICFilter(Elaboratable):
@@ -41,6 +41,9 @@ class UpsamplingCICFilter(Elaboratable):
             stages += [ IntegratorStage(width, width_out) ]
             width = width_out
 
+        # Rounding strategy: fixed to truncation for now
+        rounding = FixedPointRounding.TRUNCATION
+
         # Connect all stages to build the final filter
         # For the upsampling CIC, we can only drop bits at the last stage
         m.submodules += stages
@@ -48,8 +51,7 @@ class UpsamplingCICFilter(Elaboratable):
         for stage in stages:
             m.d.comb += stage.input.stream_eq(last)
             last = stage.output
-        truncate = max(0, width - self.width_out)
-        m.d.comb += self.output.payload.eq((last.payload >> truncate).reshape(self.output.shape))
+        m.d.comb += self.output.payload.eq(last.payload.reshape(self.output.shape, rounding=rounding))
         m.d.comb += self.output.stream_eq(last, omit="payload")
 
         return m
@@ -57,11 +59,11 @@ class UpsamplingCICFilter(Elaboratable):
 
 class DownsamplingCICFilter(Elaboratable):
     def __init__(self, M, stages, rate, width_in, width_out=None):
-        self.width_in     = width_in
-        self.width_out    = width_out or (self.width_in + ceil(stages * log2(rate * M)))
         self.M            = M
         self.stages       = stages
         self.rate         = rate
+        self.width_in     = width_in
+        self.width_out    = width_out or (self.width_in + ceil(stages * log2(rate * M)))
         self.input        = ComplexStream(Q(self.width_in, 0))
         self.output       = ComplexStream(Q(self.width_out, 0))
 
@@ -91,19 +93,17 @@ class DownsamplingCICFilter(Elaboratable):
             stage_width = next(stage_widths)
             stages += [ CombStage(self.M, stage_width, stage_width) ]
 
-        # Connect stages, truncating where needed
+        # Rounding strategy: fixed to truncation for now
+        rounding = FixedPointRounding.TRUNCATION
+
+        # Connect stages, rounding/truncating where needed
         m.submodules += stages
         last = self.input
         for stage in stages:
-            diff = len(last.payload.shape) - len(stage.input.shape)  # width difference
-            input_pld = last.payload >> diff if diff > 0 else last.payload
-            m.d.comb += stage.input.payload.eq(input_pld.reshape(stage.input.shape))
+            m.d.comb += stage.input.payload.eq(last.payload.reshape(stage.input.shape, rounding=rounding))
             m.d.comb += stage.input.stream_eq(last, omit="payload")
             last = stage.output
-
-        diff = len(last.payload.shape) - len(self.output.shape)
-        input_pld = last.payload >> diff if diff > 0 else last.payload
-        m.d.comb += self.output.payload.eq(input_pld.reshape(self.output.shape))
+        m.d.comb += self.output.payload.eq(last.payload.reshape(self.output.shape, rounding=rounding))
         m.d.comb += self.output.stream_eq(last, omit="payload")
         
         return m

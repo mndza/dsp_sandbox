@@ -1,7 +1,11 @@
 from amaranth import Cat, Const, Module, Shape, Signal, Value, tracer
 from amaranth.hdl.ast import ValueCastable, ShapeCastable
+from enum import IntEnum
 
 # Copied from Amalthea with some changes
+
+class FixedPointRounding(IntEnum):
+    TRUNCATION = 1
 
 class FixedPointShape(ShapeCastable):
     def __init__(self, integer_bits, fraction_bits, signed=True):
@@ -90,7 +94,7 @@ class FixedPointValue(ValueCastable):
         value = (yield self.value)
         return float(value) / (2**self.shape.fraction_bits)
 
-    def reshape(self, new_shape):
+    def reshape(self, new_shape, rounding=None):
         if self.shape == new_shape:
             return self
         integer_diff = new_shape.integer_bits - self.shape.integer_bits
@@ -105,8 +109,12 @@ class FixedPointValue(ValueCastable):
             top_bit = value[-1] if self.shape.signed else 0
             value = Cat(value, [top_bit]*integer_diff)
         elif integer_diff < 0:
-            # Negative difference, slice away extra integer bits
-            value = value[:integer_diff]
+            # Negative difference, act based on selected rounding
+            if rounding == FixedPointRounding.TRUNCATION:
+                value = value[-integer_diff:]
+            else:
+                # Default: slice away extra integer bits
+                value = value[:integer_diff]
 
         if new_shape.signed:
             value = value.as_signed()

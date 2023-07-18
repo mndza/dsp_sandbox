@@ -61,8 +61,10 @@ class Complex(ValueCastable):
             assert len(self.as_value()) == len(other)
             return [ self.as_value().eq(other) ]
 
-    def reshape(self, shape):
-        return Complex(value=(self.real.reshape(shape), self.imag.reshape(shape)))
+    def reshape(self, shape, rounding=None):
+        real = self.real.reshape(shape, rounding=rounding)
+        imag = self.imag.reshape(shape, rounding=rounding)
+        return Complex(value=(real, imag))
 
     def to_complex(self):
         real = (yield from self.real.to_float())

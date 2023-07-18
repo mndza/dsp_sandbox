@@ -4,7 +4,7 @@ from cmath import exp, pi
 from math import ceil, log2
 from enum import IntEnum
 
-from .types.fixed_point import Q, FixedPointValue
+from .types.fixed_point import Q, FixedPointValue, FixedPointRounding
 from .types.complex import Complex, ComplexConst
 from .streams import ComplexStream
 from .bit_exchange import SerialBitReversal
@@ -12,7 +12,6 @@ from .delay import StreamDelay
 from .skid_buffer import StreamSkidBuffer
 
 # TODO:
-# - Add optional scaling / rounding
 # - Make twiddle shape configurable
 # - Add more tests
 # - Add option for Memory-backed Delay module
@@ -29,13 +28,13 @@ class SerialFFT(Elaboratable):
     Radix-2^2
     Decimation in frequency (DIF)
     '''
-    def __init__(self, *, N, shape=Q(1,15), natural_order=True):
+    def __init__(self, *, N, shape=Q(1,15), natural_order=True, strategy=FFTScaling.UNSCALED):
         assert N & (N-1) == 0, "N must be a power of 2"
         # Internal properties
         self.N              = N
         self.shape          = shape
         self.natural_order  = natural_order
-        self.strategy       = FFTScaling.UNSCALED  # force for the moment
+        self.strategy       = strategy
         if self.strategy == FFTScaling.UNSCALED:
             output_shape = Q(ceil(log2(N)) + shape.integer_bits, shape.fraction_bits)
         else:
@@ -53,15 +52,22 @@ class SerialFFT(Elaboratable):
         stages    = []
         shape     = self.shape
 
+        # Make output shape for radix-2 stages dependant on the scaling strategy
+        def stage_shape_out(shape):
+            if self.strategy == FFTScaling.UNSCALED:
+                return None  # do not enforce shape
+            else:
+                return shape
+
         # Radix-2^2 stages
         while N >= 4:
             # First butterfly
-            stages += [ SDFRadix2Stage(N, shape) ]
+            stages += [ SDFRadix2Stage(N, shape, shape_out=stage_shape_out(shape)) ]
             shape = stages[-1].output.shape
             # Trivial twiddle factors (1, -1j)
             stages += [ R22TwiddleStage(N=N, shape=shape) ]
             # Second butterfly
-            stages += [ SDFRadix2Stage(N//2, shape) ]
+            stages += [ SDFRadix2Stage(N//2, shape, shape_out=stage_shape_out(shape)) ]
             shape = stages[-1].output.shape
             if N == 4: N = 1; break
             # Twiddle factors
@@ -77,7 +83,7 @@ class SerialFFT(Elaboratable):
         # Radix-2 stages
         while N >= 2:
             # Butterfly
-            stages += [ SDFRadix2Stage(N, shape) ]
+            stages += [ SDFRadix2Stage(N, shape, shape_out=stage_shape_out(shape)) ]
             shape = stages[-1].output.shape
             if N == 2: N = 1; break
             # Twiddle factors
@@ -117,7 +123,7 @@ class SDFRadix2Stage(Elaboratable):
         N = self.N
         output_shape = self.output.shape
 
-        # Internal counter to generate buterfly control signal
+        # Internal counter to generate butterfly control signal
         counter = Signal(range(N))
         with m.If(self.input.consume):
             m.d.sync += counter.eq(counter + 1)
@@ -150,18 +156,19 @@ class SDFRadix2Stage(Elaboratable):
 
         # Radix-2 butterfly for Single-path Delay Feedback FFT
         # Two operation modes depending on `s`
+        rounding = FixedPointRounding.TRUNCATION
         with m.If(s):
             m.d.comb += [
-                c.payload.eq((a.payload - b.payload).reshape(c.shape)),
-                d.payload.eq((a.payload + b.payload).reshape(d.shape)),
+                c.payload.eq((a.payload.reshape(b.shape) - b.payload).reshape(c.shape, rounding=rounding)),
+                d.payload.eq((a.payload.reshape(b.shape) + b.payload).reshape(d.shape, rounding=rounding)),
                 c.valid  .eq(a.valid & b.valid),
                 d.valid  .eq(a.valid & b.valid),
                 a.ready  .eq(d.produce & b.valid),
             ]
         with m.Else():
             m.d.comb += [
-                c.payload.eq(b.payload.reshape(c.shape)),
-                d.payload.eq(a.payload.reshape(d.shape)),
+                c.payload.eq(b.payload.reshape(c.shape, rounding=rounding)),
+                d.payload.eq(a.payload.reshape(d.shape, rounding=rounding)),
                 c.valid  .eq(b.valid),
                 d.valid  .eq(a.valid & o),
                 a.ready  .eq(d.produce & o),
