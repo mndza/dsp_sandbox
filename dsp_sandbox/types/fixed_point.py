@@ -48,14 +48,14 @@ def Q(integer_bits, fraction_bits, signed=True):
 class FixedPointConst(ValueCastable):
     def __init__(self, shape, value):
         self.shape = shape
-        self.value = round(value * (2**self.shape.fraction_bits))
+        self.value = Const(round(value * (2**shape.fraction_bits)), shape)
 
     @ValueCastable.lowermethod
     def as_value(self):
-        return Const(self.value, self.shape)
+        return self.value
     
     def __len__(self):
-        return len(self.shape)
+        return len(self.value)
 
 
 
@@ -71,17 +71,14 @@ class FixedPointValue(ValueCastable):
             self.value = value
         elif isinstance(value, (int, float)):
             val = FixedPointConst(value=value, shape=shape)
-            self.value = Const(val.value, shape=val.shape)
+            self.value = Const(val.value, shape=val.shape())
         else:
             raise TypeError(f"cannot create FixedPointValue from {value}")
 
     def eq(self, other):
-        if isinstance(other, FixedPointValue):
-            assert self.shape == other.shape
-            return [self.value.eq(other.value)]
-        elif isinstance(other, (Value, ValueCastable)):
-            assert len(self.value) == len(other)
-            return [self.value.eq(other)]
+        if isinstance(other, ValueCastable):
+            assert len(self.as_value()) == len(Value.cast(other))
+            return self.as_value().eq(Value.cast(other))
         else:
             raise TypeError(f"unsupported {type(other)}")
 

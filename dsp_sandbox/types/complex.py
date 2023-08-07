@@ -26,13 +26,13 @@ class Complex(ValueCastable):
         if value is None:
             if shape is None:
                 raise ValueError(f"must specify `shape` argument")
-            self.real = shape(name=self.name+'_real')
-            self.imag = shape(name=self.name+'_imag')
+            self.real = Signal(shape, name=self.name+'_real')
+            self.imag = Signal(shape, name=self.name+'_imag')
         elif isinstance(value, complex):
             if shape is None:
                 raise ValueError(f"must specify `shape` argument for complex value '{value}'")
-            self.real = shape(value.real, name=self.name+'_real')
-            self.imag = shape(value.imag, name=self.name+'_imag')
+            self.real = Const(value.real, shape, name=self.name+'_real')
+            self.imag = Const(value.imag, shape, name=self.name+'_imag')
         elif isinstance(value, tuple) and isinstance(value[0], FixedPointValue) and isinstance(value[1], FixedPointValue):
             assert shape is None
             self.real = value[0]
@@ -54,12 +54,8 @@ class Complex(ValueCastable):
             raise TypeError(f"unsupported value {type(value)}")
 
     def eq(self, other):
-        if isinstance(other, (Complex, ComplexConst)):
-            assert self.shape == other.shape, f"{self.shape} != {other.shape}"
-            return Cat(self.real, self.imag).eq(Cat(other.real, other.imag))
-        else:
-            assert len(self.as_value()) == len(other)
-            return [ self.as_value().eq(other) ]
+        assert len(self.as_value()) == len(Value.cast(other))
+        return self.as_value().eq(other)
 
     def reshape(self, shape, rounding=None):
         real = self.real.reshape(shape, rounding=rounding)
